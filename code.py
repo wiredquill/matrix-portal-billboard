@@ -6,10 +6,12 @@ import json
 import displayio
 import terminalio
 import digitalio
+import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_esp32spi.adafruit_esp32spi_socket as socket
 import adafruit_requests as requests
 from adafruit_matrixportal.matrixportal import MatrixPortal
 from adafruit_matrixportal.network import Network
+from secrets import secrets
 
 
 try:
@@ -22,8 +24,20 @@ displayio.release_displays()
 
 # --- Display setup ---
 matrixportal = MatrixPortal(status_neopixel=board.NEOPIXEL, debug=False, bit_depth=5)
-#network = matrixportal.network
-#network.connect()
+
+# --- Network setup ---
+network = matrixportal.network
+network.connect()
+
+
+# --- Setup MQTT ---
+mqtt = MQTT.MQTT(
+    broker=secrets.get("mqtt_broker"),
+    port=1883,
+)
+
+MQTT.set_socket(socket, network._wifi.esp)
+
 
 # Initialize a requests object with a socket and esp32spi interface
 #socket.set_interface(network._wifi.esp)
