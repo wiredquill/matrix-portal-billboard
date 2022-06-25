@@ -12,8 +12,8 @@ LIBS=("adafruit_matrixportal" \
 "adafruit_io" \
 "adafruit_bitmap_font" \
 "adafruit_display_text" \
-#"adafruit_wsgi" \
-#"adafruit_minimqtt" \
+"adafruit_wsgi" \
+"adafruit_minimqtt" \
 #"adafruit_lis3dh.mpy" \
 "neopixel.mpy" )
 
