@@ -1,18 +1,16 @@
 
 import time
 import board
-import busio
 import json
 import displayio
 import terminalio
 import digitalio
-import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_esp32spi.adafruit_esp32spi_socket as socket
+import adafruit_esp32spi.adafruit_esp32spi_wsgiserver as server
 import adafruit_requests as requests
+import adafruit_minimqtt
 from adafruit_matrixportal.matrixportal import MatrixPortal
-from adafruit_matrixportal.network import Network
-from secrets import secrets
-
+from adafruit_wsgi.wsgi_app import WSGIApp
 
 try:
     from secrets import secrets
@@ -25,23 +23,20 @@ displayio.release_displays()
 # --- Display setup ---
 matrixportal = MatrixPortal(status_neopixel=board.NEOPIXEL, debug=False, bit_depth=5)
 
+
 # --- Network setup ---
 network = matrixportal.network
+
+
+esp = network._wifi.esp
+esp.reset()
 network.connect()
 
-
-# --- Setup MQTT ---
-mqtt = MQTT.MQTT(
-    broker=secrets.get("mqtt_broker"),
-    port=1883,
-)
-
-MQTT.set_socket(socket, network._wifi.esp)
-
-
-# Initialize a requests object with a socket and esp32spi interface
-#socket.set_interface(network._wifi.esp)
-#requests.set_socket(socket, network._wifi.esp)
+# --- Display IP Address and set ipaddr variable to IP address ---
+ip = esp.ip_address
+print('gateway ip: {}.{}.{}.{}'.format(ip[0],ip[1],ip[2],ip[3]))
+ipaddr = ('{}.{}.{}.{}'.format(ip[0],ip[1],ip[2],ip[3]))
+print(ipaddr)
 
 class Billboard:
 
@@ -49,17 +44,18 @@ class Billboard:
     item = "NO ITEMS"
     keys_index = 0
     keys = []
-    display_types = ["img", "url", "text", "stext"]
+    display_types = ["img", "text", "stext"]
     scroll_rate = .1
     SCROLLING = False
     text_index = None
     stext_index = None
+    cur = None
 
     def __init__(self, filename):
         matrixportal.display.auto_refresh = True
         with open(filename, 'r') as c:
             self.content = json.load(c)
-        
+
         for k in self.content.keys():
             self.keys.append(k)
 
@@ -73,7 +69,7 @@ class Billboard:
         )
 
         self.stext_index = matrixportal.add_text(
-            text_font="fonts/IBMPlexMono-Medium-24_jep.bdf", 
+            text_font="fonts/IBMPlexMono-Medium-24_jep.bdf",
             text_position=((matrixportal.graphics.display.width // 2), (matrixportal.graphics.display.height // 2) - 1),
             scrolling=True,
         )
@@ -87,8 +83,36 @@ class Billboard:
                 self.keys_index += 1
             else:
                 self.keys_index = 0
+        self.cur = self.keys_index
         self.item = self.content[self.keys[self.keys_index]]
         self.__display__(self.keys[self.keys_index], self.item)
+        print("Content for self item: ", self.item)
+        print("Index for self item: ", self.keys_index)
+        return {self.keys[self.keys_index]: self.item}
+
+    def test(self):
+        self.cur = self.keys_index
+        self.item = self.content[self.keys[self.keys_index]]
+        self.__display__(self.keys[self.keys_index], self.item)
+        print("Content for self item: ", self.item)
+        return {self.keys[self.keys_index]: self.item}
+
+    def meeting(self):
+        self.keys_index = 1
+        self.cur = self.keys_index
+        self.item = self.content[self.keys[self.keys_index]]
+        self.__display__(self.keys[self.keys_index], self.item)
+        print("Content for self item: ", self.item)
+        return {self.keys[self.keys_index]: self.item}
+
+    def network(self):
+        self.keys_index = 2
+        self.cur = self.keys_index
+        self.item = self.content[self.keys[self.keys_index]]
+        self.__display__(self.keys[self.keys_index], self.item)
+        print("Content for self item: ", self.item)
+        return {self.keys[self.keys_index]: self.item}
+
 
     def prev(self):
         if len(self.keys) > 0:
@@ -96,9 +120,11 @@ class Billboard:
                 self.keys_index = len(self.keys) - 1
             else:
                 self.keys_index -= 1
+        self.cur = self.keys_index
         self.item = self.content[self.keys[self.keys_index]]
         self.__display__(self.keys[self.keys_index], self.item)
-        
+        return {self.keys[self.keys_index]: self.item}
+
     def __display__(self, key, item):
         print("key {}, item: {}".format(key,item))
         self.SCROLLING = False
@@ -108,22 +134,20 @@ class Billboard:
             if k in self.display_types:
                 if k == "text":
                     self.load_text(
-                        item[k], 
-                        text_color=item['fg_color'], 
+                        item[k],
+                        text_color=item['fg'],
                         bg=self.parse_bg(item['bg'])
                     )
                 if k == "stext":
                     self.scroll_rate = float(item['rate'] if "rate" in item.keys() else .1)
                     self.load_stext(
-                        item[k], 
-                        text_color=item['fg_color'], 
+                        item[k],
+                        text_color=item['fg'],
                         bg=self.parse_bg(item['bg'])
                     )
                     self.SCROLLING = True
                 elif k == "img":
                     self.load_image(item[k])
-                elif k == "url":
-                    self.load_from_url(item[k])
 
     def parse_bg(self, bg):
         if bg.startswith("0x"):
@@ -141,28 +165,6 @@ class Billboard:
     def load_image(self, bmp):
         matrixportal.set_background(bmp)
 
-    def load_from_url(self, url):        
-        # Define a custom header as a dict.
-        headers = {
-            "user-agent": "matrix-portal/1.0.0", 
-        }
-
-        try:
-            response = requests.get(url, headers=headers)
-        except:
-            print("Unable to get url {}".format(url))
-            return False
-
-        data = response.text
-        url_content = json.loads(data)
-        if "url" in url_content.keys():
-            raise ValueError("url type cannot reference another url - to avoid infinite recursion issues")
-        item = url_content.popitem()
-        self.__display__(item[0], item[1])
-        response.close()
-        return True
-
-
     def load_text(self, msg, *, text_color="0x000000", bg="0x10BA08"):
         matrixportal.set_background(bg)
         matrixportal.set_text(msg, self.text_index)
@@ -175,6 +177,83 @@ class Billboard:
 
 # Setup the billboard
 billboard = Billboard('content.json')
+
+web_app = WSGIApp()
+
+@web_app.route("/")
+def simple_app(request):
+    c = {billboard.cur: billboard.content[billboard.keys[billboard.cur]]}
+    return ['200 OK', [], json.dumps(c)]
+
+@web_app.route("/text/<text>/<fg>/<bg>")
+def plain_text(request, text, fg, bg):  # pylint: disable=unused-argument
+    print("text received")
+    print(text,fg,bg)
+    matrixportal.set_background(int(bg))
+    matrixportal.set_text(text)
+    matrixportal.set_text_color(int(fg))
+    c = parse_content(text,fg,bg)
+    print(c)
+ #   matrixportal(c)
+    return ("200 OK", ["POST"], json.dumps(c))
+
+@web_app.route("/next")
+def plain_text(request):  # pylint: disable=unused-argument
+    print("next screen")
+    d = billboard.next()
+    print(d)
+    print("d: {}".format(d))
+    return ("200 OK", [], json.dumps(d))
+
+@web_app.route("/prev")
+def plain_text(request):  # pylint: disable=unused-argument
+    print("prev screen")
+    d = billboard.prev()
+    print("d: {}".format(d))
+    return ("200 OK", [], json.dumps(d))
+
+@web_app.route("/test")
+def plain_text(request):  # pylint: disable=unused-argument
+    print("prev screen")
+    d = billboard.test()
+    print("d: {}".format(d))
+    return ("200 OK", [], json.dumps(d))
+
+@web_app.route("/meeting")
+def plain_text(request):  # pylint: disable=unused-argument
+    print("prev screen")
+    d = billboard.meeting()
+    print("d: {}".format(d))
+    return ("200 OK", [], json.dumps(d))
+
+@web_app.route("/network")
+def plain_text(request):  # pylint: disable=unused-argument
+    print("prev screen")
+    d = billboard.network()
+    print("d: {}".format(d))
+    return ("200 OK", [], json.dumps(d))
+
+def parse_content(text=None,fg=None,bg=None,*):
+    if text is None or fg is None or bg is None:
+        content = "{}"#default_content
+    content = (
+        '{' +
+        '"text": "' + text + '", ' +
+        '"fg": "' +   fg + '", ' +
+        '"bg": "' +   bg +
+        '"}')
+    return json.loads(content)
+
+
+
+# Display IP Address
+matrixportal.set_text(ipaddr)
+matrixportal.set_text_color('#cf2727')
+
+# Start the Webserver
+server.set_interface(esp)
+wsgiServer = server.WSGIServer(80, application=web_app)
+wsgiServer.start()
 
 # Matrix Portal Button Responders
 up_btn = digitalio.DigitalInOut(board.BUTTON_UP)
@@ -204,7 +283,17 @@ def display_change():
         cur_debounce = time.monotonic() + debounce_timeout
 
 do_scroll = time.monotonic() + billboard.scroll_rate
+
+# --- Display all of Billboards
+print(billboard)
+
+
 while True:
+    try:
+        wsgiServer.update_poll()
+    except (ValueError, RuntimeError) as e:
+        print("Failed to update, retrying\n", e)
+        continue
     display_change()
     if billboard.SCROLLING == True:
         if time.monotonic() > do_scroll:
